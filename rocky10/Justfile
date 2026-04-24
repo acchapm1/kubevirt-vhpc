@@ -1,0 +1,279 @@
+# Justfile for KubeVirt HPC Cluster (Rocky Linux 10)
+# Requires: just (https://github.com/casey/just), kubectl
+
+# ============================================================================
+# CLUSTER CONFIGURATION - EDIT THESE VARIABLES
+# ============================================================================
+
+# Naming and Network Configuration
+VARIANT := "hpc"                  # Prefix for all resources (hpc-cluster namespace)
+SSH_PORT := "30222"               # NodePort for SSH access to head node
+
+# OS Image (CDI imports this qcow2 into VM rootdisks)
+ROCKY_IMAGE_URL := "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+
+# Scalability Configuration
+COMPUTE_NODES := "2"              # Number of compute nodes (default: 2)
+STORAGE_NODES := "1"              # Number of storage nodes (default: 1)
+COMPUTE_MEMORY := "6Gi"           # Memory per compute node (e.g., 4Gi, 8Gi)
+STORAGE_SIZE := "50Gi"            # Storage capacity for NFS data volume
+ENABLE_MONITORING := "false"      # Enable monitoring stack (prometheus/grafana)
+
+# VM Resource Configuration
+HEAD_CPU := "2"                   # CPU cores for head node
+HEAD_MEMORY := "4Gi"              # Memory for head node
+STORAGE_CPU := "1"                # CPU cores for storage node
+STORAGE_MEMORY := "2Gi"           # Memory for storage node
+COMPUTE_CPU := "2"                # CPU cores for compute nodes
+
+# ============================================================================
+# DEFAULT - SHOW HELP
+# ============================================================================
+
+# Default: show help
+default:
+    @just --list
+
+# ============================================================================
+# CONFIGURATION GENERATION
+# ============================================================================
+
+# Generate Kubernetes manifests from templates based on configuration variables
+generate-config:
+    @mkdir -p generated
+    @scripts/generate-config.sh \
+      "{{VARIANT}}" "{{SSH_PORT}}" "{{COMPUTE_NODES}}" "{{STORAGE_NODES}}" \
+      "{{COMPUTE_MEMORY}}" "{{STORAGE_SIZE}}" "{{HEAD_CPU}}" "{{HEAD_MEMORY}}" \
+      "{{STORAGE_CPU}}" "{{STORAGE_MEMORY}}" "{{COMPUTE_CPU}}" "{{ROCKY_IMAGE_URL}}"
+
+# ============================================================================
+# INSTALLATION
+# ============================================================================
+
+# Install minikube and start cluster - Usage: just install-minikube [kvm2|hyperkit|docker]
+install-minikube DRIVER="kvm2":
+    #!/bin/bash
+    set -e
+    DRIVER="{{DRIVER}}"
+    # Strip DRIVER= prefix if user passed it incorrectly
+    DRIVER="${DRIVER#DRIVER=}"
+    echo "=== Checking prerequisites ==="
+    command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found"; exit 1; }
+    command -v minikube >/dev/null 2>&1 || { echo "Installing minikube..."; brew install minikube; }
+    
+    # Check Docker memory if using docker driver
+    if [ "$DRIVER" = "docker" ]; then
+        if command -v docker >/dev/null 2>&1; then
+            echo "=== Checking Docker resources ==="
+            echo "Note: If you get a memory error, increase Docker Desktop memory:"
+            echo "  Docker Desktop → Settings → Resources → Memory (set to 8192MB or more)"
+            echo ""
+        fi
+    fi
+    
+    echo "=== Starting minikube with $DRIVER driver ==="
+    minikube start --driver="$DRIVER" --memory 16384 --cpus 4 --disk-size 100g --kubernetes-version=v1.31.0
+
+# ============================================================================
+# CLUSTER MANAGEMENT
+# ============================================================================
+
+# Delete minikube cluster completely
+delete-cluster:
+    @echo "=== Deleting minikube cluster ==="
+    minikube delete || true
+
+# ============================================================================
+# KUBEVIRT INSTALLATION
+# ============================================================================
+
+# Install KubeVirt operator and Custom Resource
+install-kubevirt:
+    @echo "=== Installing KubeVirt ==="
+    kubectl apply -f https://github.com/kubevirt/kubevirt/releases/download/v1.2.2/kubevirt-operator.yaml
+    kubectl apply -f https://github.com/kubevirt/kubevirt/releases/download/v1.2.2/kubevirt-cr.yaml
+    @kubectl apply -f generated/namespace.yaml 2>/dev/null || kubectl apply -f manifests/namespace.yaml
+    @echo "=== Waiting for KubeVirt ==="
+    kubectl wait --for=condition=Available kubevirt kubevirt -n kubevirt --timeout=300s || true
+
+# Install CDI (Containerized Data Importer) for VM disk images
+install-cdi:
+    @echo "=== Installing CDI ==="
+    kubectl apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/v1.59.0/cdi-operator.yaml
+    kubectl apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/v1.59.0/cdi-cr.yaml
+    @kubectl apply -f manifests/cdi/storage-class.yaml
+    kubectl wait --for=condition=Available cdi cdi -n cdi --timeout=300s || true
+
+# ============================================================================
+# DEPLOYMENT
+# ============================================================================
+
+# Full deployment: generate config, install KubeVirt, CDI, and deploy all VMs
+full-deploy: generate-config
+    @just install-kubevirt
+    @just install-cdi
+    @just deploy-generated
+    @echo "=== Done. Wait 2-5 minutes for VMs, then: ==="
+    @echo "    just copy-ssh-key"
+    @echo "    just ssh-head"
+
+# Deploy VMs using generated manifests (requires generate-config first)
+deploy-generated:
+    #!/bin/bash
+    set -e
+    echo "=== Deploying VMs from generated manifests ==="
+    # Check if KubeVirt is installed
+    if ! kubectl get crd virtualmachines.kubevirt.io >/dev/null 2>&1; then
+        echo "ERROR: KubeVirt is not installed!"
+        echo ""
+        echo "Please install KubeVirt first by running:"
+        echo "  just install-kubevirt"
+        echo "  just install-cdi"
+        echo ""
+        echo "Or use the full deployment:"
+        echo "  just full-deploy"
+        exit 1
+    fi
+    kubectl apply -f generated/namespace.yaml
+    kubectl apply -f manifests/networking/
+    kubectl apply -f generated/services.yaml
+    kubectl apply -f manifests/config/
+    kubectl apply -f generated/head-vm.yaml
+    kubectl apply -f generated/compute-vms.yaml
+    kubectl apply -f generated/storage-vm.yaml
+    sleep 5
+    kubectl get vmis -n {{VARIANT}}-cluster
+
+# Deploy VMs using static manifests (legacy - ignores configuration variables)
+deploy-vms:
+    #!/bin/bash
+    set -e
+    echo "=== Deploying VMs from static manifests ==="
+    # Check if KubeVirt is installed
+    if ! kubectl get crd virtualmachines.kubevirt.io >/dev/null 2>&1; then
+        echo "ERROR: KubeVirt is not installed!"
+        echo ""
+        echo "Please install KubeVirt first by running:"
+        echo "  just install-kubevirt"
+        echo "  just install-cdi"
+        echo ""
+        echo "Or use the full deployment:"
+        echo "  just full-deploy"
+        exit 1
+    fi
+    kubectl apply -f manifests/namespace.yaml
+    kubectl apply -f manifests/networking/
+    kubectl apply -f manifests/services/
+    kubectl apply -f manifests/pvc/
+    kubectl apply -f manifests/config/
+    kubectl apply -f manifests/vms/
+    sleep 5
+    kubectl get vmis -n hpc-cluster
+
+# ============================================================================
+# SSH ACCESS
+# ============================================================================
+
+# Copy SSH public key to all VMs for passwordless access
+copy-ssh-key:
+    #!/bin/bash
+    set -euo pipefail
+    PUB="${PUBKEY:-}"
+    for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+      [ -f "$k" ] && { PUB="$k"; break; }
+    done
+    [ -z "$PUB" ] && { echo "No SSH key. Run: ssh-keygen -t ed25519"; exit 1; }
+    echo "Using: $PUB"
+    KEY=$(cat "$PUB")
+    NAMESPACE="{{VARIANT}}-cluster"
+    # Get list of VMs
+    VMS=$(kubectl get vms -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if [ -z "$VMS" ]; then
+      echo "No VMs found in namespace $NAMESPACE"
+      exit 1
+    fi
+    for vm in $VMS; do
+      echo "=== $vm ==="
+      kubectl exec -n "$NAMESPACE" "$vm" -- bash -c "mkdir -p /root/.ssh /home/rocky/.ssh; echo '$KEY' >> /root/.ssh/authorized_keys; echo '$KEY' >> /home/rocky/.ssh/authorized_keys; chown -R rocky:rocky /home/rocky/.ssh; chmod 700 /root/.ssh /home/rocky/.ssh; chmod 600 /root/.ssh/authorized_keys /home/rocky/.ssh/authorized_keys" 2>/dev/null || echo "  (not ready)"
+    done
+    echo "=== Done ==="
+
+# SSH into the head node VM
+ssh-head:
+    @NODE=$$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'); \
+    ssh -o StrictHostKeyChecking=no rocky@$$NODE -p {{SSH_PORT}}
+
+# Display SSH connection info and VM IP addresses
+get-ssh:
+    @NODE=$$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'); \
+    echo "SSH: ssh rocky@$$NODE -p {{SSH_PORT}} (pw: Sp@rky26)"; \
+    kubectl get vmis -n {{VARIANT}}-cluster -o custom-columns=NAME:.metadata.name,IP:.status.interfaces[0].ipAddress 2>/dev/null || \
+    kubectl get vmis -n hpc-cluster -o custom-columns=NAME:.metadata.name,IP:.status.interfaces[0].ipAddress 2>/dev/null || \
+    echo "No VMs found"
+
+# ============================================================================
+# SCALING
+# ============================================================================
+
+# Scale compute nodes to N total nodes (creates additional VMs)
+scale-compute N:
+    @scripts/scale-compute.sh {{N}} "{{ROCKY_IMAGE_URL}}"
+
+# Scale storage nodes to N total nodes (creates additional VMs)
+scale-storage N:
+    @scripts/scale-storage.sh {{N}} "{{ROCKY_IMAGE_URL}}"
+
+# ============================================================================
+# STATUS
+# ============================================================================
+
+# Show cluster nodes and VM status
+status:
+    @kubectl get nodes
+    @echo ""
+    @kubectl get vms,vmis,svc -n {{VARIANT}}-cluster 2>/dev/null || kubectl get vms,vmis,svc -n hpc-cluster 2>/dev/null || echo "No resources"
+
+# List VM IP addresses
+get-ips:
+    @kubectl get vmis -n {{VARIANT}}-cluster -o custom-columns=NAME:.metadata.name,IP:.status.interfaces[0].ipAddress 2>/dev/null || \
+    kubectl get vmis -n hpc-cluster -o custom-columns=NAME:.metadata.name,IP:.status.interfaces[0].ipAddress 2>/dev/null || \
+    echo "No VMs found"
+
+# ============================================================================
+# ANSIBLE
+# ============================================================================
+
+# Run Ansible playbook to configure VMs
+ansible-run:
+    ansible-playbook -i ansible/inventory.yaml ansible/playbook.yaml -v
+
+# ============================================================================
+# TEARDOWN
+# ============================================================================
+
+# Delete all VMs and resources in namespace (keeps minikube)
+delete-vms:
+    kubectl delete vms,vmis,datavolumes,pvc,secret,svc -n {{VARIANT}}-cluster --all --ignore-not-found 2>/dev/null || \
+    kubectl delete vms,vmis,datavolumes,pvc,secret,svc -n hpc-cluster --all --ignore-not-found 2>/dev/null || \
+    echo "No resources to delete"
+
+# Full cleanup: delete VMs and minikube cluster
+teardown:
+    kubectl delete ns {{VARIANT}}-cluster --ignore-not-found 2>/dev/null || kubectl delete ns hpc-cluster --ignore-not-found 2>/dev/null || true
+    minikube delete || true
+
+# ============================================================================
+# UTILITY
+# ============================================================================
+
+# Check that kubectl, just, and SSH keys are available
+check-prereqs:
+    @command -v kubectl >/dev/null 2>&1 && echo "kubectl: OK" || echo "kubectl: MISSING"
+    @command -v just >/dev/null 2>&1 && echo "just: OK" || echo "just: MISSING"
+    @command -v minikube >/dev/null 2>&1 && echo "minikube: OK" || echo "minikube: MISSING"
+    @ls ~/.ssh/id_*.pub 2>/dev/null && echo "SSH keys: OK" || echo "SSH keys: MISSING"
+
+# Clean up generated manifests
+clean-generated:
+    rm -rf generated/
+    @echo "Generated manifests removed"

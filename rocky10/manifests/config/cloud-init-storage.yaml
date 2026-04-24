@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloud-init-storage
+  namespace: hpc-cluster
+stringData:
+  userdata: |
+    #cloud-config
+    hostname: storage
+    fqdn: storage.node
+    manage_etc_hosts: true
+    users:
+    - name: rocky
+      shell: /bin/bash
+      lock_passwd: false
+      plain_text_passwd: Sp@rky26
+    - name: root
+      lock_passwd: false
+      plain_text_passwd: root
+    ssh_pwauth: true
+    packages:
+    - openssh-server
+    - nfs-utils
+    - python3
+    - ncurses
+    runcmd:
+    - mkdir -p /root/.ssh /home/rocky/.ssh
+    - chmod 700 /root/.ssh /home/rocky/.ssh
+    - chown -R rocky:rocky /home/rocky/.ssh
+    - systemctl enable sshd
+    - systemctl start sshd
+    - mkdir -p /export
+    - echo "/export *(rw,no_root_squash,async,no_subtree_check)" > /etc/exports
+    - systemctl enable nfs-server
+    - systemctl start nfs-server

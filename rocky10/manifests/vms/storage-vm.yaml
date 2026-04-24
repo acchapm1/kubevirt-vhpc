@@ -1,0 +1,61 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: storage
+  namespace: hpc-cluster
+  labels:
+    kubevirt.io/vm: storage
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: storage
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 2Gi
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: rootdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          - disk:
+              bus: virtio
+            name: nfsdata
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        persistentVolumeClaim:
+          claimName: storage-disk
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          secretRef:
+            name: cloud-init-storage
+      - name: nfsdata
+        persistentVolumeClaim:
+          claimName: storage-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-disk
+  namespace: hpc-cluster
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: hpc-local

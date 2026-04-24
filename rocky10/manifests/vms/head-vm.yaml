@@ -1,0 +1,55 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: head
+  namespace: hpc-cluster
+  labels:
+    kubevirt.io/vm: head
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: head
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 4Gi
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: rootdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        persistentVolumeClaim:
+          claimName: head-disk
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          secretRef:
+            name: cloud-init-head
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: head-disk
+  namespace: hpc-cluster
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: hpc-local

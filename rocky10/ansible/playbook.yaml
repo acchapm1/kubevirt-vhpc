@@ -1,0 +1,35 @@
+---
+- name: Configure HPC VMs
+  hosts: all
+  gather_facts: no
+  vars:
+    packages:
+      - vim
+      - python3
+      - nfs-utils
+  tasks:
+    - name: Install packages
+      ansible.builtin.yum:
+        name: "{{ packages }}"
+        state: present
+      become: yes
+
+    - name: Ensure /shared exists
+      ansible.builtin.file:
+        path: /shared
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      become: yes
+
+    - name: Mount NFS share (compute nodes only)
+      ansible.builtin.shell: |
+        if ! mountpoint -q /shared; then
+          mount -t nfs storage.hpc-cluster.svc.cluster.local:/export /shared || true
+        fi
+      args:
+        warn: false
+      become: yes
+      ignore_errors: yes
+      when: "'compute' in group_names"

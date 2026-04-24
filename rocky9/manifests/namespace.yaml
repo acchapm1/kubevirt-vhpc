@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpc-cluster
+  labels:
+    name: hpc-cluster

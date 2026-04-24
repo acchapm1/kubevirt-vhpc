@@ -1,0 +1,113 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: compute1
+  namespace: hpc-cluster
+  labels:
+    kubevirt.io/vm: compute1
+    kubevirt.io/role: compute
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: compute1
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 6Gi
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: rootdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        persistentVolumeClaim:
+          claimName: compute1-disk
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          secretRef:
+            name: cloud-init-compute
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: compute2
+  namespace: hpc-cluster
+  labels:
+    kubevirt.io/vm: compute2
+    kubevirt.io/role: compute
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: compute2
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 6Gi
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: rootdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: rootdisk
+        persistentVolumeClaim:
+          claimName: compute2-disk
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          secretRef:
+            name: cloud-init-compute
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: compute1-disk
+  namespace: hpc-cluster
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: hpc-local
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: compute2-disk
+  namespace: hpc-cluster
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: hpc-local
