@@ -1,0 +1,32 @@
+# Claude Code / AI agent files
+.claude/
+CLAUDE.md
+AGENTS.md
+.agent-os/
+.cursorrules
+.cursor/
+
+# Temporary / session files
+ocses
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated config files (rendered from templates — do not commit)
+rocky9/generated/
+rocky10/generated/
+
+# SSH keys that might leak into project dirs
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.pem
